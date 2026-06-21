@@ -3,28 +3,31 @@
 Indo — Indian Commodity Market Trading Agent.
 
 Usage:
-  python agent.py                  # run once and print report
-  python agent.py --telegram       # run once and send via Telegram
-  python agent.py --schedule 8     # run every 8 hours (loop)
-  python agent.py --llm            # include LLM analysis (requires Ollama)
+  python agent.py                     # run once and print report
+  python agent.py --telegram          # run once and send via Telegram
+  python agent.py --schedule 8        # run every 8 hours (loop)
+  python agent.py --monitor 60        # alert mode: check every 60min, only push
+                                       # on high-confidence signals (STRONG_BUY/SELL)
+  python agent.py --llm               # include LLM analysis (requires Ollama/llama.cpp)
 
 Environment variables:
-  TELEGRAM_BOT_TOKEN   Telegram bot token (optional)
-  TELEGRAM_CHAT_ID     Telegram chat ID (optional)
-  EIA_API_KEY          EIA.gov API key for fundamentals (optional)
-  LLM_ENABLED=true     Enable LLM narrative analysis
-  LLM_PROVIDER=ollama  Provider: ollama, openai, anthropic
-  LLM_MODEL=hermes3    Model name
-  OLLAMA_URL           Ollama server URL (default: http://localhost:11434)
+  LLM_PROVIDER=ollama     Provider: ollama, openai, anthropic, llamacpp
+  LLM_MODEL=hermes3       Model name
+  OLLAMA_URL              Ollama server (default: http://localhost:11434)
+  LLMCPP_URL              llama.cpp server (default: http://localhost:8080/v1)
+  TELEGRAM_BOT_TOKEN      Telegram bot token (optional)
+  TELEGRAM_CHAT_ID        Telegram chat ID (optional)
+  EIA_API_KEY             EIA.gov API key for fundamentals (optional)
 """
 
 import sys
 import time
 import argparse
 import json
+from datetime import datetime
 from typing import Dict, Any, Optional
 
-from config import COMMODITIES, WEIGHTS, DATA_CONFIG
+from config import COMMODITIES, WEIGHTS, DATA_CONFIG, ALERT_CONFIG
 from data import fetch_price_data, fetch_all_prices, fetch_usd_inr, compute_all_indicators
 from analysis import analyze_technicals, analyze_sentiment, analyze_fundamentals
 from reporting import generate_report, send_telegram, send_alert
@@ -172,6 +175,20 @@ def llm_analysis(results: Dict[str, Dict[str, Any]], usd_inr: Optional[float]) -
                 messages=[{"role": "user", "content": prompt}],
             )
             return resp.content[0].text.strip()
+
+        elif LLM["provider"] in ("llamacpp", "llama.cpp"):
+            import openai
+            client = openai.OpenAI(
+                base_url=LLM["llamacpp_url"],
+                api_key="not-needed",
+            )
+            resp = client.chat.completions.create(
+                model=LLM["model"],
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=1000,
+            )
+            return resp.choices[0].message.content.strip()
     except Exception as e:
         print(f"   ⚠ LLM analysis failed: {e}", file=sys.stderr)
         return None
@@ -179,11 +196,86 @@ def llm_analysis(results: Dict[str, Dict[str, Any]], usd_inr: Optional[float]) -
     return None
 
 
+def _run_monitor(interval_minutes: int):
+    threshold = ALERT_CONFIG["threshold_score"]
+    notify_signals = set(ALERT_CONFIG["notify_on"])
+    last_alerts: Dict[str, str] = {}
+
+    print(f"🔍 Alert mode: checking every {interval_minutes}min | threshold: |score| ≥ {threshold}")
+    print(f"   Only pushing Telegram alerts for: {', '.join(notify_signals)}")
+
+    usd_inr = fetch_usd_inr()
+    if usd_inr:
+        print(f"   USD/INR: {usd_inr:.2f}")
+
+    while True:
+        now = datetime.now().strftime("%d %b %H:%M")
+        triggered = []
+
+        for key, cfg in COMMODITIES.items():
+            if not cfg.active:
+                continue
+            result = analyze_commodity(key)
+            if "error" in result:
+                continue
+
+            c = result["combined"]
+            score = c["score"]
+            signal = c["signal"]
+
+            alert_key = f"{key}|{signal}|{score:.0f}"
+            prev = last_alerts.get(key)
+
+            if signal in notify_signals and alert_key != prev:
+                triggered.append((key, result))
+                last_alerts[key] = alert_key
+
+        if triggered:
+            msg_lines = [
+                f"╔══ COMMODITY ALERT — {now} ══╗",
+                "",
+            ]
+            for key, result in triggered:
+                msg_lines.append(_build_alert_message(key, result))
+                msg_lines.append("")
+            msg_lines.append(f"USD/INR: {usd_inr:.2f}" if usd_inr else "")
+            msg_lines.append("╚══════════════════════════╝")
+
+            alert = "\n".join(msg_lines)
+            print(f"\n{now} — {len(triggered)} alert(s)")
+            print(alert)
+
+            send_telegram(alert)
+        else:
+            print(f"{now} — no alerts (threshold: {threshold})", file=sys.stderr)
+
+        time.sleep(interval_minutes * 60)
+
+
+def _build_alert_message(key: str, result: Dict[str, Any]) -> str:
+    cfg = COMMODITIES[key]
+    c = result["combined"]
+    tech = result["technical"]
+
+    lines = []
+    lines.append(f"🚨 {cfg.name} — {c['signal']} ({c['score']:+.0f})")
+    lines.append(f"   Price: ${result.get('price', '?')}")
+    lines.append(f"   Technical: {tech['signal']} ({tech['score']:+.0f})")
+    top_details = tech.get("details", [])[:2]
+    for d in top_details:
+        lines.append(f"   {d}")
+    if result.get("headlines"):
+        lines.append(f"   📰 {result['headlines'][0][:80]}")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Indian Commodity Market Agent")
     parser.add_argument("--telegram", action="store_true", help="Send report via Telegram")
     parser.add_argument("--schedule", type=int, default=0, metavar="HOURS",
                         help="Run on a schedule every N hours")
+    parser.add_argument("--monitor", type=int, default=0, metavar="MINUTES",
+                        help="Alert mode: check every N minutes, only push on high-confidence signals")
     parser.add_argument("--llm", action="store_true", help="Enable LLM narrative analysis")
     args = parser.parse_args()
 
@@ -191,7 +283,9 @@ def main():
         import os
         os.environ["LLM_ENABLED"] = "true"
 
-    if args.schedule > 0:
+    if args.monitor > 0:
+        _run_monitor(args.monitor)
+    elif args.schedule > 0:
         print(f"⏰ Schedule mode: running every {args.schedule} hours")
         while True:
             run_once(args.telegram)

@@ -3,8 +3,9 @@ import xml.etree.ElementTree as ET
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import re
+import json
 
-from config import SENTIMENT_CONFIG
+from config import SENTIMENT_CONFIG, LLM
 
 NEWS_SOURCES = [
     ("Google News", SENTIMENT_CONFIG["google_news_rss"]),
@@ -84,6 +85,66 @@ def _score_headline(title: str) -> int:
     return score
 
 
+def _llm_score_headline(title: str, commodity_name: str) -> int:
+    if not LLM["enabled"]:
+        return None
+
+    prompt = (
+        f"Classify this news headline as BULLISH, BEARISH, or NEUTRAL "
+        f"for {commodity_name} prices. Reply with only one word.\n"
+        f"Headline: {title}"
+    )
+
+    try:
+        if LLM["provider"] == "ollama":
+            url = f"{LLM['ollama_url']}/api/generate"
+            resp = requests.post(url, json={
+                "model": LLM["model"], "prompt": prompt,
+                "stream": False, "options": {"temperature": 0.1},
+            }, timeout=15)
+            answer = resp.json().get("response", "").strip().upper()
+
+        elif LLM["provider"] in ("llamacpp", "llama.cpp"):
+            import openai
+            client = openai.OpenAI(base_url=LLM["llamacpp_url"], api_key="not-needed")
+            resp = client.chat.completions.create(
+                model=LLM["model"],
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1, max_tokens=10,
+            )
+            answer = resp.choices[0].message.content.strip().upper()
+
+        elif LLM["provider"] == "openai":
+            import openai
+            client = openai.OpenAI(api_key=LLM["api_key"])
+            resp = client.chat.completions.create(
+                model=LLM["model"],
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1, max_tokens=10,
+            )
+            answer = resp.choices[0].message.content.strip().upper()
+
+        elif LLM["provider"] == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=LLM["api_key"])
+            resp = client.messages.create(
+                model=LLM["model"], max_tokens=10,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            answer = resp.content[0].text.strip().upper()
+        else:
+            return None
+
+        if "BULLISH" in answer:
+            return 2
+        elif "BEARISH" in answer:
+            return -2
+        return 0
+
+    except Exception:
+        return None
+
+
 def analyze_sentiment(commodity_key: str) -> Dict[str, Any]:
     keywords = SENTIMENT_CONFIG["keywords"].get(commodity_key, [commodity_key])
     articles = _fetch_news(keywords, max_items=5)
@@ -98,27 +159,37 @@ def analyze_sentiment(commodity_key: str) -> Dict[str, Any]:
             "details": ["No recent news found"],
         }
 
+    cfg = __import__("config").COMMODITIES.get(commodity_key)
+    commodity_name = cfg.name if cfg else commodity_key
+
     total_score = 0
+    llm_used = False
     for article in articles:
-        article["sentiment_score"] = _score_headline(article["title"])
+        llm_score = _llm_score_headline(article["title"], commodity_name)
+        if llm_score is not None:
+            article["sentiment_score"] = llm_score
+            llm_used = True
+        else:
+            article["sentiment_score"] = _score_headline(article["title"])
         total_score += article["sentiment_score"]
 
     avg_score = total_score / len(articles)
 
     normalized = max(-100, min(100, avg_score * 20))
 
+    method = "LLM" if llm_used else "keywords"
     if normalized >= 20:
         signal = "BULLISH"
         direction = 1
-        detail = f"Positive sentiment ({avg_score:+.1f} avg across {len(articles)} articles)"
+        detail = f"Positive sentiment ({method}, {avg_score:+.1f} avg across {len(articles)} articles)"
     elif normalized <= -20:
         signal = "BEARISH"
         direction = -1
-        detail = f"Negative sentiment ({avg_score:+.1f} avg across {len(articles)} articles)"
+        detail = f"Negative sentiment ({method}, {avg_score:+.1f} avg across {len(articles)} articles)"
     else:
         signal = "NEUTRAL"
         direction = 0
-        detail = f"Mixed/neutral sentiment ({avg_score:+.1f})"
+        detail = f"Mixed/neutral sentiment ({method}, {avg_score:+.1f})"
 
     return {
         "signal": signal,

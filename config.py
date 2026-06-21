@@ -90,6 +90,13 @@ LLM = {
     "api_key": os.getenv("LLM_API_KEY", ""),
     "model": os.getenv("LLM_MODEL", "hermes3"),
     "ollama_url": os.getenv("OLLAMA_URL", "http://localhost:11434"),
+    "llamacpp_url": os.getenv("LLMCPP_URL", "http://localhost:8080/v1"),
 }
 
 EIA_API_KEY = os.getenv("EIA_API_KEY", "")
+
+ALERT_CONFIG = {
+    "threshold_score": int(os.getenv("ALERT_THRESHOLD", "15")),
+    "check_interval_minutes": int(os.getenv("ALERT_INTERVAL", "60")),
+    "notify_on": ["STRONG_BUY", "STRONG_SELL"],
+}
