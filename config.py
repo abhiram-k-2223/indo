@@ -20,11 +20,11 @@ class CommodityConfig:
 COMMODITIES: Dict[str, CommodityConfig] = {
     "natural_gas": CommodityConfig(
         key="natural_gas", name="Natural Gas",
-        yfinance_ticker="NG=F", mcx_symbol="NG",
+        yfinance_ticker="NG=F", mcx_symbol="NATURALGAS",
     ),
     "crude_oil": CommodityConfig(
         key="crude_oil", name="Crude Oil",
-        yfinance_ticker="CL=F", mcx_symbol="CL",
+        yfinance_ticker="CL=F", mcx_symbol="CRUDEOIL",
     ),
     "gold": CommodityConfig(
         key="gold", name="Gold",
@@ -44,6 +44,18 @@ DATA_CONFIG = {
     "price_period": "3mo",
     "price_interval": "1d",
     "min_history_days": 30,
+    "mcx_history_days": 90,
+}
+
+# ─── Data Source (yfinance or angel_one) ────────
+DATA_SOURCE = os.getenv("DATA_SOURCE", "yfinance").lower()
+
+# ─── Angel One SmartAPI (for MCX data) ──────────
+ANGEL_ONE = {
+    "api_key": os.getenv("ANGEL_API_KEY", ""),
+    "client_id": os.getenv("ANGEL_CLIENT_ID", ""),
+    "password": os.getenv("ANGEL_PASSWORD", ""),
+    "totp_secret": os.getenv("ANGEL_TOTP_SECRET", ""),
 }
 
 TECHNICAL_CONFIG = {
@@ -60,6 +72,15 @@ TECHNICAL_CONFIG = {
     "bb_period": 20,
     "bb_std": 2,
     "atr_period": 14,
+    "adx_period": 14,
+    "adx_threshold": 20,
+    "volume_period": 20,
+    "volume_high_threshold": 1.3,
+    "volume_low_threshold": 0.7,
+    "mtf_enabled": True,
+    "mtf_hourly_period": "1mo",
+    "mtf_hourly_days": 30,
+    "mtf_sma_tolerance": 0.015,
 }
 
 SENTIMENT_CONFIG = {

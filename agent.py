@@ -27,9 +27,16 @@ import json
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from config import COMMODITIES, WEIGHTS, DATA_CONFIG, ALERT_CONFIG
-from data import fetch_price_data, fetch_all_prices, fetch_usd_inr, compute_all_indicators
-from analysis import analyze_technicals, analyze_sentiment, analyze_fundamentals
+from config import COMMODITIES, WEIGHTS, DATA_CONFIG, ALERT_CONFIG, DATA_SOURCE, TECHNICAL_CONFIG
+from data import (
+    fetch_price_data, fetch_all_prices, fetch_usd_inr,
+    fetch_both_timeframes,
+    compute_all_indicators, mcx_login, mcx_refresh_tokens,
+)
+from analysis import (
+    analyze_technicals, analyze_multi_timeframe, signal_from_score,
+    analyze_sentiment, analyze_fundamentals,
+)
 from reporting import generate_report, send_telegram, send_alert
 
 
@@ -69,15 +76,31 @@ def analyze_commodity(commodity_key: str) -> Dict[str, Any]:
     if not cfg or not cfg.active:
         return {}
 
-    df = fetch_price_data(commodity_key)
-    if df is None:
+    from data import fetch_hourly_data
+
+    daily_df = fetch_price_data(commodity_key)
+    if daily_df is None:
         print(f"  ⚠ {cfg.name}: No price data available", file=sys.stderr)
         return {"error": "No data", "price": "N/A"}
 
-    df = compute_all_indicators(df)
-    latest = df.iloc[-1]
+    daily_df = compute_all_indicators(daily_df)
+    latest = daily_df.iloc[-1]
 
-    technical = analyze_technicals(df)
+    technical = analyze_technicals(daily_df)
+
+    if TECHNICAL_CONFIG.get("mtf_enabled", True):
+        hourly_df = fetch_hourly_data(commodity_key)
+        if hourly_df is not None and len(hourly_df) >= 60:
+            hourly_df = compute_all_indicators(hourly_df)
+            mtf = analyze_multi_timeframe(daily_df, hourly_df, technical)
+            technical["score"] += mtf["adjustment"]
+            if mtf["details"]:
+                technical["details"].append(mtf["details"])
+            technical["mtf"] = mtf
+            sig, direction = signal_from_score(technical["score"])
+            technical["signal"] = sig
+            technical["direction"] = direction
+
     sentiment = analyze_sentiment(commodity_key)
     fundamental = analyze_fundamentals(commodity_key)
 
@@ -94,34 +117,46 @@ def analyze_commodity(commodity_key: str) -> Dict[str, Any]:
 
 
 def run_analysis() -> Dict[str, Dict[str, Any]]:
-    print("🔄 Fetching price data...")
-    usd_inr = fetch_usd_inr()
+    is_mcx = DATA_SOURCE == "angel_one"
+    source_label = "Angel One MCX data" if is_mcx else "yfinance US futures"
+    print(f"🔄 Fetching price data ({source_label})...")
+
+    if is_mcx:
+        mcx_login()
+        mcx_refresh_tokens()
+
+    usd_inr = fetch_usd_inr() if not is_mcx else None
     if usd_inr:
         print(f"   USD/INR: {usd_inr:.2f}")
-    else:
+    elif not is_mcx:
         print("   ⚠ Could not fetch USD/INR")
 
+    currency = "₹" if is_mcx else "$"
     results = {}
     for key, cfg in COMMODITIES.items():
         if not cfg.active:
             continue
-        print(f"\n📊 Analyzing {cfg.name} ({cfg.yfinance_ticker})...")
+        label = f"{cfg.name} (MCX: {cfg.mcx_symbol})" if is_mcx else f"{cfg.name} ({cfg.yfinance_ticker})"
+        print(f"\n📊 Analyzing {label}...")
         result = analyze_commodity(key)
         results[key] = result
 
         if "error" not in result:
             c = result["combined"]
             arrow = "🟢" if c["signal"] == "STRONG_BUY" else "📈" if c["signal"] == "BUY" else "🔴" if c["signal"] == "STRONG_SELL" else "📉" if c["signal"] == "SELL" else "⚪"
-            print(f"   Price: ${result['price']}  |  Signal: {arrow} {c['signal']}  |  Score: {c['score']:+.1f}")
+            print(f"   Price: {currency}{result['price']}  |  Signal: {arrow} {c['signal']}  |  Score: {c['score']:+.1f}")
 
     return results, usd_inr
 
 
 def llm_analysis(results: Dict[str, Dict[str, Any]], usd_inr: Optional[float]) -> Optional[str]:
-    from config import LLM
+    from config import LLM, DATA_SOURCE
 
     if not LLM["enabled"]:
         return None
+
+    is_mcx = DATA_SOURCE == "angel_one"
+    currency = "₹" if is_mcx else "$"
 
     print("\n🧠 Requesting LLM narrative analysis...")
 
@@ -132,7 +167,7 @@ def llm_analysis(results: Dict[str, Dict[str, Any]], usd_inr: Optional[float]) -
         if "error" in res:
             continue
         prompt += f"### {key.replace('_', ' ').title()}\n"
-        prompt += f"Price: ${res.get('price', 'N/A')}\n"
+        prompt += f"Price: {currency}{res.get('price', 'N/A')}\n"
         prompt += f"Technical: {res['technical']['signal']} (score: {res['technical']['score']})\n"
         prompt += f"Sentiment: {res['sentiment']['signal']} (score: {res['sentiment']['score']})\n"
         prompt += f"Fundamental: {res['fundamental']['signal']} (score: {res['fundamental']['score']})\n"
@@ -201,10 +236,18 @@ def _run_monitor(interval_minutes: int):
     notify_signals = set(ALERT_CONFIG["notify_on"])
     last_alerts: Dict[str, str] = {}
 
-    print(f"🔍 Alert mode: checking every {interval_minutes}min | threshold: |score| ≥ {threshold}")
+    is_mcx = DATA_SOURCE == "angel_one"
+    source_label = "Angel One MCX data" if is_mcx else "yfinance US futures"
+    currency = "₹" if is_mcx else "$"
+
+    print(f"🔍 Alert mode: checking every {interval_minutes}min | threshold: |score| ≥ {threshold} | source: {source_label}")
     print(f"   Only pushing Telegram alerts for: {', '.join(notify_signals)}")
 
-    usd_inr = fetch_usd_inr()
+    if is_mcx:
+        mcx_login()
+        mcx_refresh_tokens()
+
+    usd_inr = fetch_usd_inr() if not is_mcx else None
     if usd_inr:
         print(f"   USD/INR: {usd_inr:.2f}")
 
@@ -236,9 +279,10 @@ def _run_monitor(interval_minutes: int):
                 "",
             ]
             for key, result in triggered:
-                msg_lines.append(_build_alert_message(key, result))
+                msg_lines.append(_build_alert_message(key, result, currency))
                 msg_lines.append("")
-            msg_lines.append(f"USD/INR: {usd_inr:.2f}" if usd_inr else "")
+            if usd_inr:
+                msg_lines.append(f"USD/INR: {usd_inr:.2f}")
             msg_lines.append("╚══════════════════════════╝")
 
             alert = "\n".join(msg_lines)
@@ -252,18 +296,38 @@ def _run_monitor(interval_minutes: int):
         time.sleep(interval_minutes * 60)
 
 
-def _build_alert_message(key: str, result: Dict[str, Any]) -> str:
+def _build_alert_message(key: str, result: Dict[str, Any], currency: str = "$") -> str:
     cfg = COMMODITIES[key]
     c = result["combined"]
     tech = result["technical"]
 
     lines = []
     lines.append(f"🚨 {cfg.name} — {c['signal']} ({c['score']:+.0f})")
-    lines.append(f"   Price: ${result.get('price', '?')}")
+    lines.append(f"   Price: {currency}{result.get('price', '?')}")
     lines.append(f"   Technical: {tech['signal']} ({tech['score']:+.0f})")
+    metrics = tech.get("metrics", {})
+    extra_parts = []
+    if "vol_ratio" in metrics:
+        extra_parts.append(f"Vol:{metrics['vol_ratio']:.1f}x")
+    if "oi_chg" in metrics:
+        extra_parts.append(f"OI:{metrics['oi_chg']:+d}")
+    mtf = tech.get("mtf", {})
+    if mtf.get("status") == "confirmed":
+        extra_parts.append("MTF:✓")
+    elif mtf.get("status") == "caution":
+        extra_parts.append("MTF:⚠")
+    if extra_parts:
+        lines.append(f"   {' '.join(extra_parts)}")
+    mtf_detail = None
+    for d in reversed(tech.get("details", [])):
+        if d.startswith("MTF"):
+            mtf_detail = d
+            break
     top_details = tech.get("details", [])[:2]
     for d in top_details:
         lines.append(f"   {d}")
+    if mtf_detail:
+        lines.append(f"   {mtf_detail}")
     if result.get("headlines"):
         lines.append(f"   📰 {result['headlines'][0][:80]}")
     return "\n".join(lines)
@@ -304,8 +368,9 @@ def run_once(send_telegram_flag: bool = False):
         usd_inr = None
 
     narrative = llm_analysis(results, usd_inr)
+    is_mcx = DATA_SOURCE == "angel_one"
 
-    report = generate_report(results, usd_inr)
+    report = generate_report(results, usd_inr, source=DATA_SOURCE)
 
     if narrative:
         report += "\n\n" + "=" * 54

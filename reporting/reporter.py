@@ -9,13 +9,17 @@ from config import TELEGRAM, COMMODITIES, WEIGHTS
 def generate_report(
     results: Dict[str, Dict[str, Any]],
     usd_inr: Optional[float] = None,
+    source: str = "yfinance",
 ) -> str:
     lines = []
     now = datetime.now().strftime("%d %b %Y %H:%M")
+    is_mcx = source == "angel_one"
+    currency = "₹" if is_mcx else "$"
 
     lines.append("=" * 54)
     lines.append(f"  INDIAN COMMODITY MARKET REPORT")
     lines.append(f"  {now}")
+    lines.append(f"  Data source: {'Angel One MCX' if is_mcx else 'yfinance US futures'}")
     lines.append("=" * 54)
 
     if usd_inr:
@@ -29,7 +33,8 @@ def generate_report(
         res = results[key]
         lines.append("")
         lines.append(f"{'─' * 54}")
-        lines.append(f"  {cfg.name.upper()} (${res.get('price', '?')})")
+        ticker = cfg.mcx_symbol if is_mcx else cfg.yfinance_ticker
+        lines.append(f"  {cfg.name.upper()} ({currency}{res.get('price', '?')}) [{ticker}]")
         lines.append(f"{'─' * 54}")
 
         for component in ["technical", "sentiment", "fundamental"]:
@@ -39,13 +44,36 @@ def generate_report(
             direction = comp.get("direction", 0)
 
             arrow = "▲" if direction > 0 else "▼" if direction < 0 else "◆"
+            metrics = comp.get("metrics", {})
+            extra = ""
+            if component == "technical":
+                parts = []
+                if "adx" in metrics:
+                    parts.append(f"ADX:{metrics['adx']}")
+                if "vol_ratio" in metrics:
+                    parts.append(f"Vol:{metrics['vol_ratio']:.1f}x")
+                if "oi_chg" in metrics:
+                    oi_val = metrics['oi_chg']
+                    parts.append(f"OI:{oi_val:+d}")
+                mtf = comp.get("mtf", {})
+                if mtf.get("status") == "confirmed":
+                    parts.append(f"MTF:✓")
+                elif mtf.get("status") == "caution":
+                    parts.append(f"MTF:⚠")
+                if parts:
+                    extra = "  " + " ".join(parts)
             lines.append(
                 f"    {component.capitalize():12s}  {arrow} {sig:12s}  "
-                f"(score: {score:+.0f})"
+                f"(score: {score:+.0f}){extra}"
             )
 
-            for detail in comp.get("details", [])[:2]:
+            details = comp.get("details", [])
+            mtf_lines = [d for d in details if d.startswith("MTF")]
+            other_details = [d for d in details if not d.startswith("MTF")]
+            for detail in other_details[:3]:
                 lines.append(f"              {detail}")
+            for mtf in mtf_lines:
+                lines.append(f"              {mtf}")
 
         combined = res.get("combined", {})
         final_sig = combined.get("signal", "NEUTRAL")

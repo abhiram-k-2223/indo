@@ -34,6 +34,25 @@ def fetch_all_prices() -> Dict[str, Optional[pd.DataFrame]]:
     }
 
 
+def fetch_hourly_data(commodity_key: str) -> Optional[pd.DataFrame]:
+    cfg = COMMODITIES.get(commodity_key)
+    if not cfg or not cfg.active:
+        return None
+
+    try:
+        ticker = yf.Ticker(cfg.yfinance_ticker)
+        df = ticker.history(
+            period=TECHNICAL_CONFIG.get("mtf_hourly_period", "1mo"),
+            interval="1h",
+        )
+        if df.empty or len(df) < 60:
+            return None
+        df.columns = [c.lower() for c in df.columns]
+        return df
+    except Exception:
+        return None
+
+
 def fetch_usd_inr() -> Optional[float]:
     try:
         ticker = yf.Ticker("USDINR=X")
@@ -105,6 +124,62 @@ def _add_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     return df
 
 
+def _add_adx(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+
+    up_move = high - high.shift(1)
+    down_move = low.shift(1) - low
+
+    pos_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    neg_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+
+    high_low = high - low
+    high_close = (high - close.shift(1)).abs()
+    low_close = (low - close.shift(1)).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+
+    def _wilder_smooth(series: pd.Series, n: int) -> pd.Series:
+        smooth = series.copy().astype(float)
+        first = series.iloc[:n].mean()
+        smooth.iloc[n - 1] = first
+        for i in range(n, len(series)):
+            smooth.iloc[i] = smooth.iloc[i - 1] - (smooth.iloc[i - 1] / n) + (series.iloc[i] / n)
+        return smooth
+
+    smooth_pos_dm = _wilder_smooth(pd.Series(pos_dm, index=df.index), period)
+    smooth_neg_dm = _wilder_smooth(pd.Series(neg_dm, index=df.index), period)
+    smooth_tr = _wilder_smooth(tr, period)
+
+    plus_di = 100 * smooth_pos_dm / smooth_tr.replace(0, np.nan)
+    minus_di = 100 * smooth_neg_dm / smooth_tr.replace(0, np.nan)
+
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    adx = _wilder_smooth(dx, period)
+
+    df["adx"] = adx
+    df["plus_di"] = plus_di
+    df["minus_di"] = minus_di
+    return df
+
+
+def _add_volume_indicators(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
+    vol = df["volume"]
+    vol_sma = vol.rolling(window=period).mean()
+    df[f"volume_sma_{period}"] = vol_sma
+    df["volume_ratio"] = vol / vol_sma.replace(0, pd.NA)
+
+    if "open_interest" in df.columns:
+        oi = df["open_interest"]
+        df["oi_change"] = oi.diff()
+        oi_sma = oi.rolling(window=period).mean()
+        df[f"oi_sma_{period}"] = oi_sma
+        df["oi_ratio"] = oi / oi_sma.replace(0, pd.NA)
+
+    return df
+
+
 def compute_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     cfg = TECHNICAL_CONFIG
     df = _add_sma(df, cfg["sma_short"])
@@ -115,4 +190,6 @@ def compute_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = _add_macd(df, cfg["macd_fast"], cfg["macd_slow"], cfg["macd_signal"])
     df = _add_bollinger(df, cfg["bb_period"], cfg["bb_std"])
     df = _add_atr(df, cfg["atr_period"])
+    df = _add_adx(df, cfg["adx_period"])
+    df = _add_volume_indicators(df, cfg.get("volume_period", 20))
     return df

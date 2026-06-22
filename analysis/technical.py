@@ -1,7 +1,21 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import pandas as pd
+import numpy as np
 
 from config import TECHNICAL_CONFIG
+
+
+def signal_from_score(score: int) -> Tuple[str, int]:
+    if score >= 25:
+        return "STRONG_BUY", 1
+    elif score >= 8:
+        return "BUY", 1
+    elif score <= -25:
+        return "STRONG_SELL", -1
+    elif score <= -8:
+        return "SELL", -1
+    else:
+        return "NEUTRAL", 0
 
 
 def analyze_technicals(df: pd.DataFrame) -> Dict[str, Any]:
@@ -21,6 +35,55 @@ def analyze_technicals(df: pd.DataFrame) -> Dict[str, Any]:
     }
 
     score = 0
+
+    if "adx" in latest and pd.notna(latest["adx"]):
+        adx_val = latest["adx"]
+        result["metrics"]["adx"] = round(adx_val, 1)
+        if adx_val < cfg["adx_threshold"]:
+            result["details"].append(f"ADX {adx_val:.1f} — ranging market, signal suppressed")
+            return result
+
+    # ── Volume/OI confirmation ────────────────
+    if "volume_ratio" in latest and pd.notna(latest["volume_ratio"]):
+        vol_ratio = latest["volume_ratio"]
+        price_up = latest["close"] > prev["close"]
+        result["metrics"]["vol_ratio"] = round(vol_ratio, 2)
+
+        if vol_ratio >= cfg["volume_high_threshold"]:
+            if price_up:
+                score += 8
+                result["details"].append(f"Volume {vol_ratio:.1f}x avg — bullish confirmation")
+            else:
+                score -= 8
+                result["details"].append(f"Volume {vol_ratio:.1f}x avg — bearish confirmation")
+        elif vol_ratio <= cfg["volume_low_threshold"]:
+            if price_up:
+                score -= 4
+                result["details"].append(f"Volume {vol_ratio:.1f}x avg — weak uptrend (divergence)")
+            else:
+                score += 4
+                result["details"].append(f"Volume {vol_ratio:.1f}x avg — weak downtrend (divergence)")
+
+    has_oi = "oi_change" in latest and pd.notna(latest.get("oi_change"))
+    if has_oi:
+        oi_chg = latest["oi_change"]
+        price_up = latest["close"] > prev["close"]
+        result["metrics"]["oi_chg"] = int(oi_chg)
+
+        if oi_chg > 0:
+            if price_up:
+                score += 6
+                result["details"].append("OI rising + price up — new longs entering")
+            else:
+                score -= 6
+                result["details"].append("OI rising + price down — new shorts entering")
+        elif oi_chg < 0:
+            if price_up:
+                score += 3
+                result["details"].append("OI falling + price up — shorts covering")
+            else:
+                score -= 3
+                result["details"].append("OI falling + price down — longs exiting")
 
     sma_s = f"sma_{cfg['sma_short']}"
     sma_l = f"sma_{cfg['sma_long']}"
@@ -103,23 +166,101 @@ def analyze_technicals(df: pd.DataFrame) -> Dict[str, Any]:
     if "atr" in latest and pd.notna(latest["atr"]):
         result["metrics"]["atr"] = round(latest["atr"], 3)
 
-    if score >= 25:
-        result["signal"] = "STRONG_BUY"
-        result["direction"] = 1
-    elif score >= 8:
-        result["signal"] = "BUY"
-        result["direction"] = 1
-    elif score <= -25:
-        result["signal"] = "STRONG_SELL"
-        result["direction"] = -1
-    elif score <= -8:
-        result["signal"] = "SELL"
-        result["direction"] = -1
-    else:
-        result["signal"] = "NEUTRAL"
-        result["direction"] = 0
-
     result["score"] = score
+    sig, direction = signal_from_score(score)
+    result["signal"] = sig
+    result["direction"] = direction
+    return result
+
+
+def analyze_multi_timeframe(
+    df_daily: pd.DataFrame,
+    df_hourly: pd.DataFrame,
+    daily_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    cfg = TECHNICAL_CONFIG
+    daily_score = daily_result["score"]
+
+    daily_direction = 1 if daily_score > 0 else -1 if daily_score < 0 else 0
+
+    result = {
+        "status": "neutral",
+        "adjustment": 0,
+        "details": "",
+    }
+
+    if daily_direction == 0 or not cfg.get("mtf_enabled", True):
+        return result
+
+    latest_h = df_hourly.iloc[-1]
+    sma_s = f"sma_{cfg['sma_short']}"
+    rsi_k = f"rsi_{cfg['rsi_period']}"
+    rsi_val = latest_h.get(rsi_k, 50)
+    rsi_val = rsi_val if pd.notna(rsi_val) else 50
+
+    price = latest_h["close"]
+    near_sma_s = False
+    if sma_s in latest_h and pd.notna(latest_h[sma_s]):
+        tol = cfg.get("mtf_sma_tolerance", 0.015)
+        near_sma_s = abs(price - latest_h[sma_s]) / latest_h[sma_s] < tol
+
+    hourly_macd_bullish = False
+    if "macd" in latest_h and "macd_signal" in latest_h:
+        if pd.notna(latest_h["macd"]) and pd.notna(latest_h["macd_signal"]):
+            hourly_macd_bullish = latest_h["macd"] > latest_h["macd_signal"]
+
+    if daily_direction > 0:
+        pulled_back = near_sma_s or (30 <= rsi_val <= 55)
+        momentum_aligning = hourly_macd_bullish
+
+        if pulled_back and momentum_aligning:
+            result["status"] = "confirmed"
+            result["adjustment"] = 15
+            result["details"] = (
+                f"MTF ✓ hourly pullback entry: RSI {rsi_val:.0f}, "
+                f"near {cfg['sma_short']}-SMA, momentum turning bullish"
+            )
+        elif pulled_back:
+            result["status"] = "confirmed"
+            result["adjustment"] = 8
+            result["details"] = (
+                f"MTF ✓ daily bullish, hourly pullback to {cfg['sma_short']}-SMA "
+                f"(RSI {rsi_val:.0f})"
+            )
+        elif rsi_val > cfg.get("rsi_overbought", 70):
+            result["status"] = "caution"
+            result["adjustment"] = -5
+            result["details"] = (
+                f"MTF ⚠ daily bullish but hourly extended "
+                f"(RSI {rsi_val:.0f}, overbought)"
+            )
+
+    else:
+        pulled_back = near_sma_s or (45 <= rsi_val <= 70)
+        momentum_aligning = not hourly_macd_bullish
+
+        if pulled_back and momentum_aligning:
+            result["status"] = "confirmed"
+            result["adjustment"] = 15
+            result["details"] = (
+                f"MTF ✓ hourly pullback entry: RSI {rsi_val:.0f}, "
+                f"near {cfg['sma_short']}-SMA, momentum turning bearish"
+            )
+        elif pulled_back:
+            result["status"] = "confirmed"
+            result["adjustment"] = 8
+            result["details"] = (
+                f"MTF ✓ daily bearish, hourly pullback to {cfg['sma_short']}-SMA "
+                f"(RSI {rsi_val:.0f})"
+            )
+        elif rsi_val < cfg.get("rsi_oversold", 30):
+            result["status"] = "caution"
+            result["adjustment"] = -5
+            result["details"] = (
+                f"MTF ⚠ daily bearish but hourly oversold "
+                f"(RSI {rsi_val:.0f})"
+            )
+
     return result
 
 
