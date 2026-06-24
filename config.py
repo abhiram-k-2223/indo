@@ -107,9 +107,9 @@ TELEGRAM = {
 
 LLM = {
     "enabled": os.getenv("LLM_ENABLED", "false").lower() == "true",
-    "provider": os.getenv("LLM_PROVIDER", "ollama"),
+    "provider": os.getenv("LLM_PROVIDER", "llamacpp"),
     "api_key": os.getenv("LLM_API_KEY", ""),
-    "model": os.getenv("LLM_MODEL", "hermes3"),
+    "model": os.getenv("LLM_MODEL", "default"),
     "ollama_url": os.getenv("OLLAMA_URL", "http://localhost:11434"),
     "llamacpp_url": os.getenv("LLMCPP_URL", "http://localhost:8080/v1"),
 }

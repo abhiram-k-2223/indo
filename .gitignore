@@ -4,3 +4,7 @@ __pycache__/
 # --- Virtual environments ---
 .venv/
 .env
+
+# --- Large binary / model files ---
+models/
+*.gguf

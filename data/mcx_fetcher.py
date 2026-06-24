@@ -14,12 +14,12 @@ from config import COMMODITIES, ANGEL_ONE, DATA_CONFIG, TECHNICAL_CONFIG
 
 BASE_URL = "https://apiconnect.angelone.in"
 ROUTES = {
-    "login": "/rest/auth/angelbroking/user/v1/loginByClientCode",
-    "search": "/rest/secure/angelbroking/market/v1/searchscrip",
+    "login": "/rest/auth/angelbroking/user/v1/loginByPassword",
+    "search": "/rest/secure/angelbroking/order/v1/searchScrip",
     "candle": "/rest/secure/angelbroking/historical/v1/getCandleData",
 }
 
-_headers = {
+BASE_HEADERS = {
     "Accept": "application/json",
     "Content-Type": "application/json",
     "X-UserType": "USER",
@@ -60,7 +60,7 @@ def _mac_address() -> str:
 
 
 def _build_headers(api_key: str, jwt_token: str = "") -> dict:
-    h = dict(_headers)
+    h = dict(BASE_HEADERS)
     h["X-PrivateKey"] = api_key
     if jwt_token:
         h["Authorization"] = f"Bearer {jwt_token}"
@@ -123,7 +123,7 @@ def login() -> bool:
         return False
 
 
-def _headers() -> dict:
+def _session_headers() -> dict:
     if not _session:
         return {}
     h = _build_headers(_session["api_key"], _session["jwt_token"])
@@ -133,15 +133,25 @@ def _headers() -> dict:
     return h
 
 
+_last_search_time: float = 0.0
+
+
 def search_scrip(symbol: str) -> List[dict]:
+    global _last_search_time
     if not _session:
         return []
+
+    now_t = time.time()
+    elapsed = now_t - _last_search_time
+    if elapsed < 1.0:
+        time.sleep(1.0 - elapsed)
+    _last_search_time = time.time()
 
     try:
         resp = requests.post(
             f"{BASE_URL}{ROUTES['search']}",
             json={"exchange": "MCX", "searchscrip": symbol},
-            headers=_headers(),
+            headers=_session_headers(),
             timeout=15,
         )
         data = resp.json()
@@ -179,7 +189,7 @@ def fetch_candle_data(
                 "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
                 "todate": to_date.strftime("%Y-%m-%d %H:%M"),
             },
-            headers=_headers(),
+            headers=_session_headers(),
             timeout=15,
         )
         data = resp.json()
@@ -214,6 +224,20 @@ def fetch_candle_data(
         return None
 
 
+def _parse_fut_expiry(tradingsymbol: str) -> Optional[datetime]:
+    """Parse expiry from MCX futures symbol like GOLD05AUG26FUT."""
+    import re
+    months_map = {
+        "JAN": 1, "FEB": 2, "MAR": 3, "APR": 4, "MAY": 5, "JUN": 6,
+        "JUL": 7, "AUG": 8, "SEP": 9, "OCT": 10, "NOV": 11, "DEC": 12,
+    }
+    m = re.search(r"(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})FUT$", tradingsymbol.upper())
+    if not m:
+        return None
+    d, mon, y = int(m.group(1)), months_map[m.group(2)], 2000 + int(m.group(3))
+    return datetime(y, mon, d)
+
+
 def _find_near_month_token(symbol: str) -> Optional[str]:
     results = search_scrip(symbol)
     if not results:
@@ -222,30 +246,34 @@ def _find_near_month_token(symbol: str) -> Optional[str]:
     now = datetime.now()
     best_token = None
     best_expiry = None
+    exact_prefix = symbol.upper()
 
     for scrip in results:
         token = scrip.get("symboltoken") or scrip.get("token")
-        expiry_str = scrip.get("expiry") or ""
-        symbol_name = scrip.get("symbol", "").upper()
-
-        if not token:
+        tsymbol = scrip.get("tradingsymbol", "").upper()
+        if not token or "FUT" not in tsymbol:
             continue
 
-        if expiry_str:
-            try:
-                expiry = pd.to_datetime(expiry_str, errors="coerce")
-                if pd.isna(expiry):
-                    continue
-                if expiry < now:
-                    continue
-                if best_expiry is None or expiry < best_expiry:
-                    best_expiry = expiry
-                    best_token = token
-            except Exception:
+        # Match prefix followed by date pattern, avoiding variants (GOLDGUINEA, GOLDM, SILVER100, etc.)
+        import re
+        suffix = tsymbol[len(exact_prefix):]
+        date_re = r"\d{2}(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\d{2}FUT$"
+        # CRUDEOIL has M prefix (CRUDEOILM16JUL26FUT)
+        if exact_prefix == "CRUDEOIL":
+            if not re.match(r"^[A-Z]" + date_re, suffix):
                 continue
         else:
-            if best_token is None:
-                best_token = token
+            if not re.match(r"^" + date_re, suffix):
+                continue
+
+        expiry = _parse_fut_expiry(tsymbol)
+        if expiry is None:
+            continue
+        if expiry < now:
+            continue
+        if best_expiry is None or expiry < best_expiry:
+            best_expiry = expiry
+            best_token = token
 
     return best_token
 
