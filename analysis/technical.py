@@ -2,7 +2,15 @@ from typing import Dict, Any, Optional, Tuple
 import pandas as pd
 import numpy as np
 
-from config import TECHNICAL_CONFIG
+from config import TECHNICAL_CONFIG, COMMODITIES
+
+
+def _config_for(commodity_key: str) -> dict:
+    cfg = dict(TECHNICAL_CONFIG)
+    commodity = COMMODITIES.get(commodity_key)
+    if commodity and commodity.tech_overrides:
+        cfg.update(commodity.tech_overrides)
+    return cfg
 
 
 def signal_from_score(score: int) -> Tuple[str, int]:
@@ -18,13 +26,13 @@ def signal_from_score(score: int) -> Tuple[str, int]:
         return "NEUTRAL", 0
 
 
-def analyze_technicals(df: pd.DataFrame) -> Dict[str, Any]:
-    if df is None or df.empty or len(df) < 30:
+def analyze_technicals(df: pd.DataFrame, commodity_key: str = "") -> Dict[str, Any]:
+    """Trend-following indicator: dual MA crossover + ADX filter + volume confirmation."""
+    if df is None or df.empty or len(df) < 60:
         return _neutral("Insufficient price history")
 
-    cfg = TECHNICAL_CONFIG
+    cfg = _config_for(commodity_key)
     latest = df.iloc[-1]
-    prev = df.iloc[-2] if len(df) > 1 else latest
 
     result = {
         "signal": "NEUTRAL",
@@ -33,22 +41,80 @@ def analyze_technicals(df: pd.DataFrame) -> Dict[str, Any]:
         "details": [],
         "metrics": {},
     }
-
     score = 0
 
+    # ── 1) ADX regime filter ──────────────
     if "adx" in latest and pd.notna(latest["adx"]):
         adx_val = latest["adx"]
         result["metrics"]["adx"] = round(adx_val, 1)
         if adx_val < cfg["adx_threshold"]:
-            result["details"].append(f"ADX {adx_val:.1f} — ranging market, signal suppressed")
+            result["details"].append(f"ADX {adx_val:.1f} < {cfg['adx_threshold']} — ranging, no signal")
             return result
 
-    # ── Volume/OI confirmation ────────────────
+    # ── 2) Dual MA crossover ───
+    ma_fast = cfg.get("ma_fast_period", 50)
+    ma_slow = cfg.get("ma_slow_period", 200)
+    sma_f = f"sma_{ma_fast}"
+    sma_s = f"sma_{ma_slow}"
+    if sma_f in latest and sma_s in latest:
+        sma_fv = latest[sma_f]
+        sma_sv = latest[sma_s]
+        if pd.notna(sma_fv) and pd.notna(sma_sv):
+            if sma_fv > sma_sv:
+                score += 40
+                result["details"].append(
+                    f"{ma_fast}-SMA ({sma_fv:.1f}) above {ma_slow}-SMA ({sma_sv:.1f}) — uptrend"
+                )
+            else:
+                score -= 40
+                result["details"].append(
+                    f"{ma_fast}-SMA ({sma_fv:.1f}) below {ma_slow}-SMA ({sma_sv:.1f}) — downtrend"
+                )
+
+    # ── 3) Price vs slow-SMA (trend alignment + extension check) ──
+    if sma_s in latest and pd.notna(latest[sma_s]):
+        price = latest["close"]
+        sma_sv = latest[sma_s]
+        result["metrics"]["trend_sma"] = round(sma_sv, 2)
+        dist_pct = (price - sma_sv) / sma_sv * 100
+        result["metrics"]["trend_dist_pct"] = round(dist_pct, 2)
+        max_ext = cfg.get("max_extension_pct", 25)
+        if price > sma_sv:
+            if dist_pct > max_ext:
+                result["details"].append(
+                    f"Price {dist_pct:+.1f}% above {ma_slow}-SMA — overextended, skip long"
+                )
+                return result
+            score += 15
+            result["details"].append(f"Price {dist_pct:+.1f}% above {ma_slow}-SMA — macro bullish")
+        else:
+            if abs(dist_pct) > max_ext:
+                result["details"].append(
+                    f"Price {dist_pct:+.1f}% below {ma_slow}-SMA — overextended, skip short"
+                )
+                return result
+            score -= 15
+            result["details"].append(f"Price {dist_pct:+.1f}% below {ma_slow}-SMA — macro bearish")
+
+    # ── 4) Short-term momentum (5 vs 20 SMA) ──
+    sma5 = "sma_5"
+    sma20 = "sma_20"
+    if sma5 in latest and sma20 in latest:
+        sma5v = latest[sma5]
+        sma20v = latest[sma20]
+        if pd.notna(sma5v) and pd.notna(sma20v):
+            if sma5v > sma20v:
+                score += 10
+                result["details"].append("Short-term momentum bullish (5-SMA > 20-SMA)")
+            else:
+                score -= 10
+                result["details"].append("Short-term momentum bearish (5-SMA < 20-SMA)")
+
+    # ── 5) Volume confirmation ────────────
     if "volume_ratio" in latest and pd.notna(latest["volume_ratio"]):
         vol_ratio = latest["volume_ratio"]
-        price_up = latest["close"] > prev["close"]
         result["metrics"]["vol_ratio"] = round(vol_ratio, 2)
-
+        price_up = latest["close"] > df.iloc[-2]["close"]
         if vol_ratio >= cfg["volume_high_threshold"]:
             if price_up:
                 score += 8
@@ -59,108 +125,22 @@ def analyze_technicals(df: pd.DataFrame) -> Dict[str, Any]:
         elif vol_ratio <= cfg["volume_low_threshold"]:
             if price_up:
                 score -= 4
-                result["details"].append(f"Volume {vol_ratio:.1f}x avg — weak uptrend (divergence)")
+                result["details"].append(f"Volume {vol_ratio:.1f}x avg — weak uptrend")
             else:
                 score += 4
-                result["details"].append(f"Volume {vol_ratio:.1f}x avg — weak downtrend (divergence)")
+                result["details"].append(f"Volume {vol_ratio:.1f}x avg — weak downtrend")
 
-    has_oi = "oi_change" in latest and pd.notna(latest.get("oi_change"))
-    if has_oi:
-        oi_chg = latest["oi_change"]
-        price_up = latest["close"] > prev["close"]
-        result["metrics"]["oi_chg"] = int(oi_chg)
-
-        if oi_chg > 0:
-            if price_up:
-                score += 6
-                result["details"].append("OI rising + price up — new longs entering")
-            else:
-                score -= 6
-                result["details"].append("OI rising + price down — new shorts entering")
-        elif oi_chg < 0:
-            if price_up:
-                score += 3
-                result["details"].append("OI falling + price up — shorts covering")
-            else:
-                score -= 3
-                result["details"].append("OI falling + price down — longs exiting")
-
-    sma_s = f"sma_{cfg['sma_short']}"
-    sma_l = f"sma_{cfg['sma_long']}"
-    ema_s = f"ema_{cfg['ema_short']}"
-    ema_l = f"ema_{cfg['ema_long']}"
+    # ── 6) RSI directional ────────────────
     rsi_c = f"rsi_{cfg['rsi_period']}"
-
-    if sma_s in latest and sma_l in latest:
-        if pd.notna(latest[sma_s]) and pd.notna(latest[sma_l]):
-            if latest[sma_s] > latest[sma_l]:
-                score += 15
-                result["details"].append("Bullish SMA crossover (short > long)")
-            else:
-                score -= 15
-                result["details"].append("Bearish SMA crossover (short < long)")
-
-    if ema_s in latest and ema_l in latest:
-        if pd.notna(latest[ema_s]) and pd.notna(latest[ema_l]):
-            if latest[ema_s] > latest[ema_l]:
-                score += 10
-                result["details"].append("Bullish EMA alignment")
-            else:
-                score -= 10
-                result["details"].append("Bearish EMA alignment")
-
     if rsi_c in latest and pd.notna(latest[rsi_c]):
         rsi_val = latest[rsi_c]
         result["metrics"]["rsi"] = round(rsi_val, 1)
-        if rsi_val > cfg["rsi_overbought"]:
-            score -= 20
-            result["details"].append(f"Overbought RSI ({rsi_val:.1f})")
-        elif rsi_val < cfg["rsi_oversold"]:
-            score += 20
-            result["details"].append(f"Oversold RSI ({rsi_val:.1f})")
-        elif rsi_val > 50:
+        if rsi_val > 50:
             score += 8
             result["details"].append(f"RSI bullish ({rsi_val:.1f})")
         else:
             score -= 8
             result["details"].append(f"RSI bearish ({rsi_val:.1f})")
-
-    if "macd" in latest and "macd_signal" in latest:
-        macd_val = latest["macd"]
-        signal_val = latest["macd_signal"]
-        if pd.notna(macd_val) and pd.notna(signal_val):
-            if macd_val > signal_val:
-                score += 12
-                result["details"].append("MACD above signal (bullish)")
-            else:
-                score -= 12
-                result["details"].append("MACD below signal (bearish)")
-        if "macd_hist" in latest and "macd_hist" in prev:
-            if pd.notna(latest["macd_hist"]) and pd.notna(prev["macd_hist"]):
-                if latest["macd_hist"] > prev["macd_hist"]:
-                    score += 5
-                    result["details"].append("MACD momentum increasing")
-                else:
-                    score -= 5
-                    result["details"].append("MACD momentum decreasing")
-
-    if "bb_upper" in latest and "bb_lower" in latest:
-        close = latest["close"]
-        upper = latest["bb_upper"]
-        lower = latest["bb_lower"]
-        if pd.notna(upper) and pd.notna(lower):
-            if close >= upper:
-                score -= 10
-                result["details"].append("Price at upper Bollinger Band")
-            elif close <= lower:
-                score += 10
-                result["details"].append("Price at lower Bollinger Band")
-            else:
-                bb_pos = (close - lower) / (upper - lower)
-                if bb_pos > 0.7:
-                    score -= 4
-                elif bb_pos < 0.3:
-                    score += 4
 
     result["metrics"]["price"] = round(latest["close"], 2)
     if "atr" in latest and pd.notna(latest["atr"]):
@@ -177,8 +157,9 @@ def analyze_multi_timeframe(
     df_daily: pd.DataFrame,
     df_hourly: pd.DataFrame,
     daily_result: Dict[str, Any],
+    commodity_key: str = "",
 ) -> Dict[str, Any]:
-    cfg = TECHNICAL_CONFIG
+    cfg = _config_for(commodity_key)
     daily_score = daily_result["score"]
 
     daily_direction = 1 if daily_score > 0 else -1 if daily_score < 0 else 0

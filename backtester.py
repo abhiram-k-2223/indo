@@ -18,15 +18,9 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-from config import COMMODITIES, TECHNICAL_CONFIG, DATA_SOURCE, WEIGHTS
+from config import COMMODITIES, TECHNICAL_CONFIG, WEIGHTS
 from data import compute_all_indicators
-from data.mcx_fetcher import (
-    fetch_mcx_price_data as _mcx_fetch,
-    login as _mcx_login,
-    refresh_all_tokens as _mcx_refresh,
-)
 from analysis.technical import analyze_technicals, signal_from_score
-from analysis.sentiment import analyze_sentiment
 
 
 # ─── Config ────────────────────────────────────────
@@ -34,22 +28,18 @@ from analysis.sentiment import analyze_sentiment
 BACKTEST_CFG = {
     "sl_atr_mult": 2.0,
     "tp_atr_mult": 3.0,
-    "position_pct": 0.10,
+    "position_pct": 0.15,
     "capital": 100_000,
     "min_signals": ["STRONG_BUY", "STRONG_SELL"],
-    "min_trade_days": 5,      # skip last N days to avoid end-of-data artifacts
+    "min_trade_days": 5,
+    "trailing_stop": True,
+    "trail_activation_atr": 4.0,
+    "trail_distance_atr": 3.0,
 }
 
 
 def _fetch_bt_data(key: str):
-    """Fetch with max history for backtesting. Falls back to yfinance."""
-    if DATA_SOURCE == "angel_one":
-        _mcx_login()
-        _mcx_refresh()
-        df = _mcx_fetch(key)
-        if df is not None and not df.empty:
-            return df
-        print("  (MCX failed, trying yfinance)", file=sys.stderr)
+    """Fetch with max history for backtesting. Always uses yfinance for max history."""
     cfg = COMMODITIES.get(key)
     if not cfg:
         return None
@@ -80,8 +70,11 @@ class Trade:
     exit_reason: str = ""
     pnl: float = 0.0
     pnl_pct: float = 0.0
+    best_price: float = 0.0
+    trailed: bool = False
 
     def __post_init__(self):
+        self.best_price = self.entry_price
         if self.direction == 1:
             self.stop_loss = self.entry_price - self.atr * BACKTEST_CFG["sl_atr_mult"]
             self.take_profit = self.entry_price + self.atr * BACKTEST_CFG["tp_atr_mult"]
@@ -121,18 +114,45 @@ def run_backtest(commodity_key: str, df: pd.DataFrame, sentiment_score: int = 0)
 
         if active is not None:
             price = cur["close"]
+            atr = cur.get("atr", active.atr)
+            atr = atr if pd.notna(atr) and atr > 0 else active.atr
+
             if active.direction == 1:
+                if price > active.best_price:
+                    active.best_price = price
+                if bc.get("trailing_stop", False) and not active.trailed:
+                    profit_atr = (price - active.entry_price) / atr
+                    if profit_atr >= bc.get("trail_activation_atr", 1.0):
+                        active.trailed = True
+                        active.take_profit = 0.0
+                if active.trailed:
+                    new_sl = active.best_price - atr * bc.get("trail_distance_atr", 1.0)
+                    if new_sl > active.stop_loss:
+                        active.stop_loss = new_sl
                 if price <= active.stop_loss:
-                    active.close(date, price, "stop_loss"); trades.append(active); active = None
-                elif price >= active.take_profit:
+                    reason = "trailing_stop" if active.trailed else "stop_loss"
+                    active.close(date, price, reason); trades.append(active); active = None
+                elif active.take_profit > 0 and price >= active.take_profit:
                     active.close(date, price, "take_profit"); trades.append(active); active = None
             else:
+                if price < active.best_price:
+                    active.best_price = price
+                if bc.get("trailing_stop", False) and not active.trailed:
+                    profit_atr = (active.entry_price - price) / atr
+                    if profit_atr >= bc.get("trail_activation_atr", 1.0):
+                        active.trailed = True
+                        active.take_profit = 0.0
+                if active.trailed:
+                    new_sl = active.best_price + atr * bc.get("trail_distance_atr", 1.0)
+                    if new_sl < active.stop_loss:
+                        active.stop_loss = new_sl
                 if price >= active.stop_loss:
-                    active.close(date, price, "stop_loss"); trades.append(active); active = None
-                elif price <= active.take_profit:
+                    reason = "trailing_stop" if active.trailed else "stop_loss"
+                    active.close(date, price, reason); trades.append(active); active = None
+                elif active.take_profit > 0 and price <= active.take_profit:
                     active.close(date, price, "take_profit"); trades.append(active); active = None
 
-        tech = analyze_technicals(window)
+        tech = analyze_technicals(window, commodity_key)
         combined_score = tech["score"] * WEIGHTS["technical"] + sentiment_score * WEIGHTS["sentiment"]
         combined_signal, direction = signal_from_score(combined_score)
 
@@ -257,14 +277,8 @@ def main():
     else:
         commodities = {k: v for k, v in COMMODITIES.items() if v.active}
 
-    print("  Computing sentiment for each commodity...")
-    sentiment_scores = {}
-    for key in commodities:
-        try:
-            sent = analyze_sentiment(key)
-            sentiment_scores[key] = sent.get("score", 0)
-        except Exception:
-            sentiment_scores[key] = 0
+    print("  Sentiment disabled for backtesting (would bias historical results)")
+    sentiment_scores = {key: 0 for key in commodities}
 
     all_results = []
     for key, cfg in commodities.items():

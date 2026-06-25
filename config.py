@@ -15,16 +15,19 @@ class CommodityConfig:
     mcx_symbol: str = ""
     position_size: float = 1.0
     active: bool = True
+    tech_overrides: Optional[Dict[str, Any]] = None
 
 
 COMMODITIES: Dict[str, CommodityConfig] = {
     "natural_gas": CommodityConfig(
         key="natural_gas", name="Natural Gas",
         yfinance_ticker="NG=F", mcx_symbol="NATURALGAS",
+        tech_overrides={"ma_slow_period": 100},
     ),
     "crude_oil": CommodityConfig(
         key="crude_oil", name="Crude Oil",
         yfinance_ticker="CL=F", mcx_symbol="CRUDEOIL",
+        tech_overrides={"ma_slow_period": 100},
     ),
     "gold": CommodityConfig(
         key="gold", name="Gold",
@@ -73,7 +76,7 @@ TECHNICAL_CONFIG = {
     "bb_std": 2,
     "atr_period": 14,
     "adx_period": 14,
-    "adx_threshold": 20,
+    "adx_threshold": 25,
     "volume_period": 20,
     "volume_high_threshold": 1.3,
     "volume_low_threshold": 0.7,
@@ -81,6 +84,9 @@ TECHNICAL_CONFIG = {
     "mtf_hourly_period": "1mo",
     "mtf_hourly_days": 30,
     "mtf_sma_tolerance": 0.015,
+    "ma_fast_period": 50,
+    "ma_slow_period": 200,
+    "max_extension_pct": 25,
 }
 
 SENTIMENT_CONFIG = {

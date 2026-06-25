@@ -38,6 +38,9 @@ from analysis import (
     analyze_sentiment, analyze_fundamentals,
 )
 from reporting import generate_report, send_telegram, send_alert
+from utils.log import setup_logger
+
+logger = setup_logger()
 
 
 def combine_signals(
@@ -51,13 +54,13 @@ def combine_signals(
         + fundamental.get("score", 0) * WEIGHTS["fundamental"]
     )
 
-    if combined_score >= 20:
+    if combined_score >= 25:
         signal = "STRONG_BUY"
-    elif combined_score >= 6:
+    elif combined_score >= 8:
         signal = "BUY"
-    elif combined_score <= -20:
+    elif combined_score <= -25:
         signal = "STRONG_SELL"
-    elif combined_score <= -6:
+    elif combined_score <= -8:
         signal = "SELL"
     else:
         signal = "NEUTRAL"
@@ -80,19 +83,19 @@ def analyze_commodity(commodity_key: str) -> Dict[str, Any]:
 
     daily_df = fetch_price_data(commodity_key)
     if daily_df is None:
-        print(f"  ⚠ {cfg.name}: No price data available", file=sys.stderr)
+        logger.warning("%s: No price data available", cfg.name)
         return {"error": "No data", "price": "N/A"}
 
     daily_df = compute_all_indicators(daily_df)
     latest = daily_df.iloc[-1]
 
-    technical = analyze_technicals(daily_df)
+    technical = analyze_technicals(daily_df, commodity_key)
 
     if TECHNICAL_CONFIG.get("mtf_enabled", True):
         hourly_df = fetch_hourly_data(commodity_key)
         if hourly_df is not None and len(hourly_df) >= 60:
             hourly_df = compute_all_indicators(hourly_df)
-            mtf = analyze_multi_timeframe(daily_df, hourly_df, technical)
+            mtf = analyze_multi_timeframe(daily_df, hourly_df, technical, commodity_key)
             technical["score"] += mtf["adjustment"]
             if mtf["details"]:
                 technical["details"].append(mtf["details"])
@@ -119,7 +122,7 @@ def analyze_commodity(commodity_key: str) -> Dict[str, Any]:
 def run_analysis() -> Dict[str, Dict[str, Any]]:
     is_mcx = DATA_SOURCE == "angel_one"
     source_label = "Angel One MCX data" if is_mcx else "yfinance US futures"
-    print(f"🔄 Fetching price data ({source_label})...")
+    logger.info("Fetching price data (%s)...", source_label)
 
     if is_mcx:
         mcx_login()
@@ -127,9 +130,9 @@ def run_analysis() -> Dict[str, Dict[str, Any]]:
 
     usd_inr = fetch_usd_inr() if not is_mcx else None
     if usd_inr:
-        print(f"   USD/INR: {usd_inr:.2f}")
+        logger.info("USD/INR: %.2f", usd_inr)
     elif not is_mcx:
-        print("   ⚠ Could not fetch USD/INR")
+        logger.warning("Could not fetch USD/INR")
 
     currency = "₹" if is_mcx else "$"
     results = {}
@@ -137,14 +140,14 @@ def run_analysis() -> Dict[str, Dict[str, Any]]:
         if not cfg.active:
             continue
         label = f"{cfg.name} (MCX: {cfg.mcx_symbol})" if is_mcx else f"{cfg.name} ({cfg.yfinance_ticker})"
-        print(f"\n📊 Analyzing {label}...")
+        logger.info("Analyzing %s...", label)
         result = analyze_commodity(key)
         results[key] = result
 
         if "error" not in result:
             c = result["combined"]
             arrow = "🟢" if c["signal"] == "STRONG_BUY" else "📈" if c["signal"] == "BUY" else "🔴" if c["signal"] == "STRONG_SELL" else "📉" if c["signal"] == "SELL" else "⚪"
-            print(f"   Price: {currency}{result['price']}  |  Signal: {arrow} {c['signal']}  |  Score: {c['score']:+.1f}")
+            logger.info("Price: %s%s  |  Signal: %s %s  |  Score: %+.1f", currency, result['price'], arrow, c['signal'], c['score'])
 
     return results, usd_inr
 
@@ -158,7 +161,7 @@ def llm_analysis(results: Dict[str, Dict[str, Any]], usd_inr: Optional[float]) -
     is_mcx = DATA_SOURCE == "angel_one"
     currency = "₹" if is_mcx else "$"
 
-    print("\n🧠 Requesting LLM narrative analysis...")
+    logger.info("Requesting LLM narrative analysis...")
 
     prompt = "You are an Indian commodity market analyst. Based on this data, provide a concise "
     prompt += "trading outlook for each commodity. Mention key drivers and risks.\n\n"
@@ -225,13 +228,13 @@ def llm_analysis(results: Dict[str, Dict[str, Any]], usd_inr: Optional[float]) -
             )
             return resp.choices[0].message.content.strip()
     except Exception as e:
-        print(f"   ⚠ LLM analysis failed: {e}", file=sys.stderr)
+        logger.warning("LLM analysis failed: %s", e)
         return None
 
     return None
 
 
-def _run_monitor(interval_minutes: int):
+def _run_monitor(interval_minutes: int, paper: bool = False):
     threshold = ALERT_CONFIG["threshold_score"]
     notify_signals = set(ALERT_CONFIG["notify_on"])
     last_alerts: Dict[str, str] = {}
@@ -240,8 +243,10 @@ def _run_monitor(interval_minutes: int):
     source_label = "Angel One MCX data" if is_mcx else "yfinance US futures"
     currency = "₹" if is_mcx else "$"
 
-    print(f"🔍 Alert mode: checking every {interval_minutes}min | threshold: |score| ≥ {threshold} | source: {source_label}")
-    print(f"   Only pushing Telegram alerts for: {', '.join(notify_signals)}")
+    logger.info("Alert mode: checking every %dmin | threshold: |score| >= %d | source: %s", interval_minutes, threshold, source_label)
+    logger.info("Only pushing Telegram alerts for: %s", ', '.join(notify_signals))
+    if paper:
+        logger.info("Paper trading enabled: tracking positions and P&L")
 
     if is_mcx:
         mcx_login()
@@ -249,11 +254,12 @@ def _run_monitor(interval_minutes: int):
 
     usd_inr = fetch_usd_inr() if not is_mcx else None
     if usd_inr:
-        print(f"   USD/INR: {usd_inr:.2f}")
+        logger.info("USD/INR: %.2f", usd_inr)
 
     while True:
         now = datetime.now().strftime("%d %b %H:%M")
         triggered = []
+        paper_results = {} if paper else None
 
         for key, cfg in COMMODITIES.items():
             if not cfg.active:
@@ -261,6 +267,9 @@ def _run_monitor(interval_minutes: int):
             result = analyze_commodity(key)
             if "error" in result:
                 continue
+
+            if paper:
+                paper_results[key] = result
 
             c = result["combined"]
             score = c["score"]
@@ -272,6 +281,10 @@ def _run_monitor(interval_minutes: int):
             if signal in notify_signals and alert_key != prev:
                 triggered.append((key, result))
                 last_alerts[key] = alert_key
+
+        if paper:
+            from paper_trader import update as paper_update
+            paper_update(paper_results)
 
         if triggered:
             msg_lines = [
@@ -286,12 +299,11 @@ def _run_monitor(interval_minutes: int):
             msg_lines.append("╚══════════════════════════╝")
 
             alert = "\n".join(msg_lines)
-            print(f"\n{now} — {len(triggered)} alert(s)")
-            print(alert)
+            logger.info("\n%s — %d alert(s)\n%s", now, len(triggered), alert)
 
             send_telegram(alert)
         else:
-            print(f"{now} — no alerts (threshold: {threshold})", file=sys.stderr)
+            logger.info("%s — no alerts (threshold: %d)", now, threshold)
 
         time.sleep(interval_minutes * 60)
 
@@ -341,6 +353,7 @@ def main():
     parser.add_argument("--monitor", type=int, default=0, metavar="MINUTES",
                         help="Alert mode: check every N minutes, only push on high-confidence signals")
     parser.add_argument("--llm", action="store_true", help="Enable LLM narrative analysis")
+    parser.add_argument("--paper", action="store_true", help="Paper trading mode: track positions and P&L")
     args = parser.parse_args()
 
     if args.llm:
@@ -348,18 +361,18 @@ def main():
         os.environ["LLM_ENABLED"] = "true"
 
     if args.monitor > 0:
-        _run_monitor(args.monitor)
+        _run_monitor(args.monitor, paper=args.paper)
     elif args.schedule > 0:
-        print(f"⏰ Schedule mode: running every {args.schedule} hours")
+        logger.info("Schedule mode: running every %d hours", args.schedule)
         while True:
-            run_once(args.telegram)
-            print(f"\n💤 Sleeping for {args.schedule} hours...")
+            run_once(args.telegram, paper=args.paper)
+            logger.info("Sleeping for %d hours...", args.schedule)
             time.sleep(args.schedule * 3600)
     else:
-        run_once(args.telegram)
+        run_once(args.telegram, paper=args.paper)
 
 
-def run_once(send_telegram_flag: bool = False):
+def run_once(send_telegram_flag: bool = False, paper: bool = False):
     results_dict = run_analysis()
     if isinstance(results_dict, tuple):
         results, usd_inr = results_dict
@@ -380,12 +393,16 @@ def run_once(send_telegram_flag: bool = False):
 
     print("\n\n" + report)
 
+    if paper:
+        from paper_trader import update as paper_update
+        paper_update(results)
+
     if send_telegram_flag:
         sent = send_telegram(report)
         if sent:
-            print("\n✓ Report sent via Telegram")
+            logger.info("Report sent via Telegram")
         else:
-            print("\n✗ Telegram send failed (check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
+            logger.warning("Telegram send failed (check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import pandas as pd
 import pyotp
 
 from config import COMMODITIES, ANGEL_ONE, DATA_CONFIG, TECHNICAL_CONFIG
+from utils.retry import retry
 
 BASE_URL = "https://apiconnect.angelone.in"
 ROUTES = {
@@ -136,6 +137,7 @@ def _session_headers() -> dict:
 _last_search_time: float = 0.0
 
 
+@retry(max_attempts=3, delay=0.5, backoff=2.0)
 def search_scrip(symbol: str) -> List[dict]:
     global _last_search_time
     if not _session:
@@ -168,6 +170,7 @@ def _parse_timestamp(ts) -> pd.Timestamp:
     return pd.to_datetime(str(ts), errors="coerce")
 
 
+@retry(max_attempts=3, delay=1.0, backoff=2.0, exceptions=(requests.RequestException,))
 def fetch_candle_data(
     symbol_token: str,
     interval: str = "ONE_DAY",

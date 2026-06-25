@@ -180,10 +180,13 @@ def _add_volume_indicators(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
     return df
 
 
+NEEDED_SMAS = {5, 9, 20, 21, 50, 100, 200}
+
+
 def compute_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     cfg = TECHNICAL_CONFIG
-    df = _add_sma(df, cfg["sma_short"])
-    df = _add_sma(df, cfg["sma_long"])
+    for p in sorted(NEEDED_SMAS):
+        df = _add_sma(df, p)
     df = _add_ema(df, cfg["ema_short"])
     df = _add_ema(df, cfg["ema_long"])
     df = _add_rsi(df, cfg["rsi_period"])

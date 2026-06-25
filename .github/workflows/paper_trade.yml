@@ -1,0 +1,40 @@
+name: Paper Trade
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'   # every 2 hours
+  workflow_dispatch:          # manual trigger too
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v3
+
+      - name: Run paper trading
+        run: uv run python agent.py --paper
+        env:
+          DATA_SOURCE: ${{ vars.DATA_SOURCE || 'yfinance' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || '' }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || '' }}
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY || '' }}
+          ANGEL_API_KEY: ${{ secrets.ANGEL_API_KEY || '' }}
+          ANGEL_CLIENT_ID: ${{ secrets.ANGEL_CLIENT_ID || '' }}
+          ANGEL_PASSWORD: ${{ secrets.ANGEL_PASSWORD || '' }}
+          ANGEL_TOTP_SECRET: ${{ secrets.ANGEL_TOTP_SECRET || '' }}
+
+      - name: Commit state changes
+        run: |
+          git config user.name "indo-bot"
+          git config user.email "bot@indo.local"
+          git add data/paper_state.json data/paper_journal.csv 2>/dev/null || true
+          if ! git diff --cached --quiet; then
+            git commit -m "paper: auto-update state and journal"
+            git push
+          else
+            echo "No state changes"
+          fi
