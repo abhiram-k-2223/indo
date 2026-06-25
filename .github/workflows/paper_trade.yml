@@ -23,7 +23,7 @@ jobs:
           echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
 
       - name: Run paper trading
-        run: python agent.py --paper
+        run: python agent.py --telegram --paper
         env:
           DATA_SOURCE: ${{ vars.DATA_SOURCE || 'yfinance' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || '' }}
