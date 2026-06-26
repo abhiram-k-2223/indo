@@ -301,7 +301,8 @@ def _run_monitor(interval_minutes: int, paper: bool = False):
             alert = "\n".join(msg_lines)
             logger.info("\n%s — %d alert(s)\n%s", now, len(triggered), alert)
 
-            send_telegram(alert)
+            if not send_telegram(alert):
+                logger.warning("Alert Telegram send failed")
         else:
             logger.info("%s — no alerts (threshold: %d)", now, threshold)
 

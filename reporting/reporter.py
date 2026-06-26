@@ -1,9 +1,12 @@
+import logging
 import requests
 from typing import Dict, Any, Optional
 from datetime import datetime
 from textwrap import dedent
 
 from config import TELEGRAM, COMMODITIES, WEIGHTS
+
+logger = logging.getLogger(__name__)
 
 
 def generate_report(
@@ -105,24 +108,31 @@ def send_telegram(message: str) -> bool:
     if not token or not chat_id:
         return False
 
-    try:
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        # Telegram has 4096 char limit, chunk if needed
-        if len(message) > 4000:
-            message = message[:2000] + "\n\n... (truncated)"
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-        resp = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "Markdown",
-            },
-            timeout=15,
-        )
-        return resp.status_code == 200
-    except Exception:
-        return False
+    if len(message) > 4000:
+        message = message[:2000] + "\n\n... (truncated)"
+
+    payload = {
+        "chat_id": chat_id,
+        "text": message,
+    }
+
+    for parse_mode in ("Markdown", None):
+        try:
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
+            else:
+                payload.pop("parse_mode", None)
+
+            resp = requests.post(url, json=payload, timeout=15)
+            if resp.status_code == 200:
+                return True
+            logger.warning("Telegram API error (parse_mode=%s): %s", parse_mode, resp.text)
+        except Exception as e:
+            logger.warning("Telegram request failed (parse_mode=%s): %s", parse_mode, e)
+
+    return False
 
 
 def send_alert(
