@@ -110,29 +110,39 @@ def send_telegram(message: str) -> bool:
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
 
-    if len(message) > 4000:
-        message = message[:2000] + "\n\n... (truncated)"
+    MAX_TELEGRAM = 4096
+    chunks = []
+    while len(message) > MAX_TELEGRAM:
+        split_at = message.rfind("\n", 0, MAX_TELEGRAM)
+        if split_at < MAX_TELEGRAM // 2:
+            split_at = MAX_TELEGRAM
+        chunks.append(message[:split_at])
+        message = message[split_at:].lstrip("\n")
+    if message:
+        chunks.append(message)
 
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-    }
+    for i, chunk in enumerate(chunks):
+        payload = {"chat_id": chat_id, "text": chunk}
+        if len(chunks) > 1:
+            payload["text"] = f"[{i+1}/{len(chunks)}] {chunk}"
 
-    for parse_mode in ("Markdown", None):
-        try:
-            if parse_mode:
-                payload["parse_mode"] = parse_mode
-            else:
-                payload.pop("parse_mode", None)
+        for parse_mode in ("Markdown", None):
+            try:
+                if parse_mode:
+                    payload["parse_mode"] = parse_mode
+                else:
+                    payload.pop("parse_mode", None)
 
-            resp = requests.post(url, json=payload, timeout=15)
-            if resp.status_code == 200:
-                return True
-            logger.warning("Telegram API error (parse_mode=%s): %s", parse_mode, resp.text)
-        except Exception as e:
-            logger.warning("Telegram request failed (parse_mode=%s): %s", parse_mode, e)
+                resp = requests.post(url, json=payload, timeout=15)
+                if resp.status_code == 200:
+                    break
+                logger.warning("Telegram API error (parse_mode=%s): %s", parse_mode, resp.text)
+            except Exception as e:
+                logger.warning("Telegram request failed (parse_mode=%s): %s", parse_mode, e)
+        else:
+            return False
 
-    return False
+    return True
 
 
 def send_alert(

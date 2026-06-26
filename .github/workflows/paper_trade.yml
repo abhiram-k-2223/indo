@@ -30,7 +30,7 @@ jobs:
       - name: Run paper trading
         run: python agent.py --telegram --paper
         env:
-          DATA_SOURCE: ${{ vars.DATA_SOURCE || 'yfinance' }}
+          DATA_SOURCE: ${{ vars.DATA_SOURCE || 'angel_one' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN || '' }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID || '' }}
           EIA_API_KEY: ${{ secrets.EIA_API_KEY || '' }}
