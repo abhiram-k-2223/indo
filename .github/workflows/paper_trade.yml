@@ -22,6 +22,11 @@ jobs:
           echo "VIRTUAL_ENV=.venv" >> "$GITHUB_ENV"
           echo "${{ github.workspace }}/.venv/bin" >> "$GITHUB_PATH"
 
+      - name: Debug Telegram secrets
+        run: |
+          echo "TELEGRAM_BOT_TOKEN set: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}"
+          echo "TELEGRAM_CHAT_ID set: ${{ secrets.TELEGRAM_CHAT_ID != '' }}"
+
       - name: Run paper trading
         run: python agent.py --telegram --paper
         env:
