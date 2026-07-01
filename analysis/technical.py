@@ -2,7 +2,7 @@ from typing import Dict, Any, Optional, Tuple
 import pandas as pd
 import numpy as np
 
-from config import TECHNICAL_CONFIG, COMMODITIES
+from config import TECHNICAL_CONFIG, COMMODITIES, SIGNAL_THRESHOLDS
 
 
 def _config_for(commodity_key: str) -> dict:
@@ -13,17 +13,30 @@ def _config_for(commodity_key: str) -> dict:
     return cfg
 
 
-def signal_from_score(score: int) -> Tuple[str, int]:
-    if score >= 25:
+def signal_from_score(score: float, thresholds: Optional[Dict[str, float]] = None) -> Tuple[str, int]:
+    if thresholds is None:
+        thresholds = SIGNAL_THRESHOLDS
+    if score >= thresholds["strong_buy"]:
         return "STRONG_BUY", 1
-    elif score >= 8:
+    elif score >= thresholds["buy"]:
         return "BUY", 1
-    elif score <= -25:
+    elif score <= thresholds["strong_sell"]:
         return "STRONG_SELL", -1
-    elif score <= -8:
+    elif score <= thresholds["sell"]:
         return "SELL", -1
     else:
         return "NEUTRAL", 0
+
+
+def validate_thresholds(thresholds: Optional[Dict[str, float]] = None) -> bool:
+    t = thresholds or SIGNAL_THRESHOLDS
+    if not (t["strong_buy"] > t["buy"] > 0 > t["sell"] > t["strong_sell"]):
+        raise ValueError(
+            f"Threshold ordering violated: "
+            f"STRONG_BUY({t['strong_buy']}) > BUY({t['buy']}) > 0 > "
+            f"SELL({t['sell']}) > STRONG_SELL({t['strong_sell']})"
+        )
+    return True
 
 
 def analyze_technicals(df: pd.DataFrame, commodity_key: str = "") -> Dict[str, Any]:

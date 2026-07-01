@@ -100,10 +100,39 @@ SENTIMENT_CONFIG = {
     },
 }
 
+SIGNAL_THRESHOLDS = {
+    "strong_buy": 25,
+    "buy": 8,
+    "sell": -8,
+    "strong_sell": -25,
+}
+
+SIGNAL_SMOOTHING = {
+    "window": 3,
+    "min_consensus_pct": 0.5,
+    "use_median": True,
+}
+
 WEIGHTS = {
     "technical": 0.55,
     "sentiment": 0.25,
     "fundamental": 0.20,
+}
+
+SENTIMENT_WEIGHTS = {
+    "phrase_match": 2.0,
+    "single_word": 1.0,
+    "llm_boost": 1.5,
+    "confidence_threshold": 0.3,
+}
+
+FUNDAMENTAL_CONFIG = {
+    "eia_storage_lookback": 52,
+    "eia_production_lookback": 12,
+    "mom_change_threshold_pct": 3.0,
+    "storage_vs_avg_weight": 0.6,
+    "price_change_weight": 0.4,
+    "multi_commodity_indicators": True,
 }
 
 TELEGRAM = {

@@ -8,3 +8,5 @@ __pycache__/
 # --- Large binary / model files ---
 models/
 *.gguf
+
+flaws.md

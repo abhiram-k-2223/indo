@@ -27,14 +27,14 @@ import json
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from config import COMMODITIES, WEIGHTS, DATA_CONFIG, ALERT_CONFIG, DATA_SOURCE, TECHNICAL_CONFIG
+from config import COMMODITIES, WEIGHTS, SIGNAL_THRESHOLDS, DATA_CONFIG, ALERT_CONFIG, DATA_SOURCE, TECHNICAL_CONFIG
 from data import (
     fetch_price_data, fetch_all_prices, fetch_usd_inr,
     fetch_both_timeframes,
-    compute_all_indicators, mcx_login, mcx_refresh_tokens,
+    compute_all_indicators, compute_indicators_safe, mcx_login, mcx_refresh_tokens,
 )
 from analysis import (
-    analyze_technicals, analyze_multi_timeframe, signal_from_score,
+    analyze_technicals, analyze_multi_timeframe, signal_from_score, validate_thresholds,
     analyze_sentiment, analyze_fundamentals,
 )
 from reporting import generate_report, send_telegram, send_alert
@@ -47,26 +47,21 @@ def combine_signals(
     technical: Dict[str, Any],
     sentiment: Dict[str, Any],
     fundamental: Dict[str, Any],
+    thresholds: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
+    if thresholds is None:
+        thresholds = SIGNAL_THRESHOLDS
     combined_score = (
         technical.get("score", 0) * WEIGHTS["technical"]
         + sentiment.get("score", 0) * WEIGHTS["sentiment"]
         + fundamental.get("score", 0) * WEIGHTS["fundamental"]
     )
 
-    if combined_score >= 25:
-        signal = "STRONG_BUY"
-    elif combined_score >= 8:
-        signal = "BUY"
-    elif combined_score <= -25:
-        signal = "STRONG_SELL"
-    elif combined_score <= -8:
-        signal = "SELL"
-    else:
-        signal = "NEUTRAL"
+    sig, direction = signal_from_score(combined_score, thresholds)
 
     return {
-        "signal": signal,
+        "signal": sig,
+        "direction": direction,
         "score": round(combined_score, 1),
         "technical_weight": WEIGHTS["technical"],
         "sentiment_weight": WEIGHTS["sentiment"],
@@ -86,7 +81,7 @@ def analyze_commodity(commodity_key: str) -> Dict[str, Any]:
         logger.warning("%s: No price data available", cfg.name)
         return {"error": "No data", "price": "N/A"}
 
-    daily_df = compute_all_indicators(daily_df)
+    daily_df = compute_indicators_safe(daily_df)
     latest = daily_df.iloc[-1]
 
     technical = analyze_technicals(daily_df, commodity_key)
@@ -94,7 +89,7 @@ def analyze_commodity(commodity_key: str) -> Dict[str, Any]:
     if TECHNICAL_CONFIG.get("mtf_enabled", True):
         hourly_df = fetch_hourly_data(commodity_key)
         if hourly_df is not None and len(hourly_df) >= 60:
-            hourly_df = compute_all_indicators(hourly_df)
+            hourly_df = compute_indicators_safe(hourly_df)
             mtf = analyze_multi_timeframe(daily_df, hourly_df, technical, commodity_key)
             technical["score"] += mtf["adjustment"]
             if mtf["details"]:
@@ -347,6 +342,7 @@ def _build_alert_message(key: str, result: Dict[str, Any], currency: str = "$") 
 
 
 def main():
+    validate_thresholds()
     parser = argparse.ArgumentParser(description="Indian Commodity Market Agent")
     parser.add_argument("--telegram", action="store_true", help="Send report via Telegram")
     parser.add_argument("--schedule", type=int, default=0, metavar="HOURS",

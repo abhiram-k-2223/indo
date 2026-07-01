@@ -18,9 +18,9 @@ from datetime import datetime
 import pandas as pd
 import numpy as np
 
-from config import COMMODITIES, TECHNICAL_CONFIG, WEIGHTS
-from data import compute_all_indicators
-from analysis.technical import analyze_technicals, signal_from_score
+from config import COMMODITIES, TECHNICAL_CONFIG, WEIGHTS, SIGNAL_THRESHOLDS
+from data import compute_indicators_safe
+from analysis import analyze_technicals, signal_from_score, validate_thresholds
 
 
 # ─── Config ────────────────────────────────────────
@@ -101,7 +101,7 @@ def run_backtest(commodity_key: str, df: pd.DataFrame, sentiment_score: int = 0)
     if n < warmup:
         return {"error": f"Need ≥{warmup} rows, got {n}"}
 
-    df = compute_all_indicators(df)
+    df = compute_indicators_safe(df)
     trades: List[Trade] = []
     active: Optional[Trade] = None
     equity = [float(bc["capital"])]
@@ -257,6 +257,7 @@ def print_trade_journal(trades: List):
 # ─── Main ──────────────────────────────────────────
 
 def main():
+    validate_thresholds()
     parser = argparse.ArgumentParser(description="Indo — Walk-forward backtester")
     parser.add_argument("--commodity", "-c", type=str, default="",
                         help="Backtest a single commodity (e.g. gold, crude_oil)")

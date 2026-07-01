@@ -4,7 +4,7 @@ import numpy as np
 from typing import Optional, Dict, Tuple
 from datetime import datetime
 
-from config import COMMODITIES, DATA_CONFIG, TECHNICAL_CONFIG
+from config import COMMODITIES, DATA_CONFIG, TECHNICAL_CONFIG, SIGNAL_SMOOTHING
 
 
 def fetch_price_data(commodity_key: str) -> Optional[pd.DataFrame]:
@@ -183,7 +183,19 @@ def _add_volume_indicators(df: pd.DataFrame, period: int = 20) -> pd.DataFrame:
 NEEDED_SMAS = {5, 9, 20, 21, 50, 100, 200}
 
 
+def validate_bar_sequence(df: pd.DataFrame) -> pd.DataFrame:
+    if not isinstance(df.index, pd.DatetimeIndex):
+        return df
+    df = df.sort_index()
+    dups = df.index.duplicated(keep="last")
+    if dups.any():
+        df = df[~dups]
+    return df
+
+
 def compute_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df = validate_bar_sequence(df)
     cfg = TECHNICAL_CONFIG
     for p in sorted(NEEDED_SMAS):
         df = _add_sma(df, p)
@@ -195,4 +207,11 @@ def compute_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = _add_atr(df, cfg["atr_period"])
     df = _add_adx(df, cfg["adx_period"])
     df = _add_volume_indicators(df, cfg.get("volume_period", 20))
+    return df
+
+
+def compute_indicators_safe(df: pd.DataFrame, min_bars: int = 60) -> pd.DataFrame:
+    df = compute_all_indicators(df)
+    if len(df) < min_bars:
+        return df
     return df
