@@ -1,8 +1,8 @@
 # Indo — Indian Commodity Market Agent
 
-My first quant strategy — a multi-factor trading agent for Indian commodity
-markets (MCX). Combines technical analysis, LLM-powered news sentiment, and
-multi-timeframe confirmation into a single daily signal.
+A multi-factor trading agent for Indian commodity markets (MCX). Combines
+technical analysis, LLM-powered news sentiment, and multi-timeframe confirmation
+into a single daily signal.
 
 ## Strategy
 
@@ -10,19 +10,21 @@ A scoring system that blends:
 
 | Factor | Weight | What It Looks At |
 |--------|--------|------------------|
-| Technical | 55% | SMA/EMA crossovers, RSI, MACD, Bollinger Bands, ATR, Volume/OI, ADX regime filter |
-| Sentiment | 25% | News headlines classified by local LLM (LFM 2.5) as bullish/bearish/neutral |
-| Multi-timeframe | — | Checks daily bias, then hourly pullback for entry confirmation |
+| Technical | 65% | SMA/EMA crossovers, RSI, MACD, Bollinger Bands, ATR, Volume/OI, ADX regime filter, multi-timeframe (MTF) confirmation |
+| Sentiment | 35% | News headlines scored via phrase matching + LLM (LFM 2.5) with confidence weighting |
 
-**Regime filter**: ADX < 20 = ranging market, all signals suppressed.
+**Regime filter**: ADX < 25 = ranging market, all directional signals suppressed.
 
-**Position sizing**: ATR-based stops (2×) and targets (3×), fixed 10% capital
+**Signal smoothing**: Composite score uses a rolling 3-bar median to reduce noise
+from single-bar outliers. Consensus and stability metrics reported alongside.
+
+**Position sizing**: ATR-based stops (2×) and targets (3×), fixed 15% capital
 allocation per trade.
 
 ## Data Sources
 
 - **Angel One SmartAPI** — real MCX futures data (Gold, Silver, Crude, NatGas, Copper)
-- **yfinance** — fallback US futures for backtesting (25-year history)
+- **yfinance** — fallback US futures for backtesting (max history)
 - **Google News RSS** — commodity headlines
 - **Local LLM (llama.cpp)** — sentiment classification via LFM 2.5 GGUF
 
@@ -49,21 +51,24 @@ cp .env.example .env   # fill in Angel One creds, Telegram token, etc.
 
 | Score | Signal |
 |-------|--------|
-| ≥ +20 | STRONG_BUY |
-| +6 to +19 | BUY |
-| -5 to +5 | NEUTRAL |
-| -19 to -6 | SELL |
-| ≤ -20 | STRONG_SELL |
+| ≥ +25 | STRONG_BUY |
+| +8 to +24 | BUY |
+| -7 to +7 | NEUTRAL |
+| -24 to -8 | SELL |
+| ≤ -25 | STRONG_SELL |
 
-## Backtest Results (1999–2024, US Futures)
+Thresholds are configurable via `SIGNAL_THRESHOLDS` in `config.py` and validated
+at startup for proper ordering.
+
+## Backtest Results (yfinance, US Futures)
 
 | Commodity | Trades | Win Rate | Profit Factor | Return |
 |-----------|--------|----------|---------------|--------|
-| Natural Gas | 132 | 44.7% | 1.34 | +24.4% |
-| Crude Oil | 88 | 43.2% | 1.26 | +9.3% |
-| Gold | 165 | 47.9% | 1.09 | +2.2% |
-| Silver | 148 | 41.2% | 1.00 | −0.1% |
-| Copper | 118 | 41.5% | 0.94 | −1.8% |
+| Natural Gas | 114 | 49.1% | 1.27 | +28.2% |
+| Crude Oil | 133 | 42.9% | 1.08 | +7.2% |
+| Gold | 187 | 52.9% | 1.60 | +27.3% |
+| Silver | 149 | 51.0% | 1.47 | +26.4% |
+| Copper | 151 | 49.0% | 1.29 | +16.3% |
 
 Strategy designed for MCX intraday/medium-term — US futures backtest is
 indicative only.
@@ -78,6 +83,6 @@ indicative only.
 
 ## Why "Indo"
 
-Short for *Indian Commodities* — built specifically for MCX, where fundamental
+Short for *Indian Commodities* — built specifically for MCX, where price
 drivers differ from global benchmarks (import parity, government policies,
 domestic demand cycles).
