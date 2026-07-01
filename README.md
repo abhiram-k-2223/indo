@@ -60,15 +60,17 @@ cp .env.example .env   # fill in Angel One creds, Telegram token, etc.
 Thresholds are configurable via `SIGNAL_THRESHOLDS` in `config.py` and validated
 at startup for proper ordering.
 
-## Backtest Results (yfinance, US Futures)
+## Backtest Results (yfinance, US Futures, with costs)
 
-| Commodity | Trades | Win Rate | Profit Factor | Return |
-|-----------|--------|----------|---------------|--------|
-| Natural Gas | 114 | 49.1% | 1.27 | +28.2% |
-| Crude Oil | 133 | 42.9% | 1.08 | +7.2% |
-| Gold | 187 | 52.9% | 1.60 | +27.3% |
-| Silver | 149 | 51.0% | 1.47 | +26.4% |
-| Copper | 151 | 49.0% | 1.29 | +16.3% |
+| Commodity | Trades | Win Rate | Profit Factor | Return | Sharpe |
+|-----------|--------|----------|---------------|--------|--------|
+| Natural Gas | 109 | 46.8% | 1.10 | +12.2% | 0.10 |
+| Crude Oil | 120 | 49.2% | 1.14 | +13.4% | 0.11 |
+| Gold | 157 | 56.7% | 1.46 | +20.5% | **0.34** |
+| Silver | 127 | 53.5% | 1.41 | +23.8% | 0.27 |
+| Copper | 124 | 49.2% | 1.20 | +10.8% | 0.16 |
+
+Risk params: SL 2.5× ATR, TP 4× ATR, trailing 3×/2.5×. Includes 0.05% slippage and 0.02% commission.
 
 Strategy designed for MCX intraday/medium-term — US futures backtest is
 indicative only.

@@ -113,6 +113,26 @@ SIGNAL_SMOOTHING = {
     "use_median": True,
 }
 
+SIGNAL_WEIGHTS = {
+    "oi": 0.50,
+    "momentum": 0.50,
+    "momentum_lookback": 60,
+}
+
+ZSCORE_THRESHOLDS = {
+    "entry": 0.75,
+    "exit": 0.3,
+    "strong_entry": 1.5,
+}
+
+RISK_PARAMS = {
+    "sl_atr_mult": 2.5,
+    "tp_atr_mult": 4.0,
+    "trail_activation_atr": 3.0,
+    "trail_distance_atr": 2.5,
+    "min_trade_days": 3,
+}
+
 WEIGHTS = {
     "technical": 0.65,
     "sentiment": 0.35,
