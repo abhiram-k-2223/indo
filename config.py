@@ -114,9 +114,8 @@ SIGNAL_SMOOTHING = {
 }
 
 WEIGHTS = {
-    "technical": 0.55,
-    "sentiment": 0.25,
-    "fundamental": 0.20,
+    "technical": 0.65,
+    "sentiment": 0.35,
 }
 
 SENTIMENT_WEIGHTS = {
@@ -124,15 +123,6 @@ SENTIMENT_WEIGHTS = {
     "single_word": 1.0,
     "llm_boost": 1.5,
     "confidence_threshold": 0.3,
-}
-
-FUNDAMENTAL_CONFIG = {
-    "eia_storage_lookback": 52,
-    "eia_production_lookback": 12,
-    "mom_change_threshold_pct": 3.0,
-    "storage_vs_avg_weight": 0.6,
-    "price_change_weight": 0.4,
-    "multi_commodity_indicators": True,
 }
 
 TELEGRAM = {

@@ -35,7 +35,7 @@ from data import (
 )
 from analysis import (
     analyze_technicals, analyze_multi_timeframe, signal_from_score, validate_thresholds,
-    analyze_sentiment, analyze_fundamentals,
+    analyze_sentiment,
 )
 from reporting import generate_report, send_telegram, send_alert
 from utils.log import setup_logger
@@ -46,7 +46,6 @@ logger = setup_logger()
 def combine_signals(
     technical: Dict[str, Any],
     sentiment: Dict[str, Any],
-    fundamental: Dict[str, Any],
     thresholds: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     if thresholds is None:
@@ -54,7 +53,6 @@ def combine_signals(
     combined_score = (
         technical.get("score", 0) * WEIGHTS["technical"]
         + sentiment.get("score", 0) * WEIGHTS["sentiment"]
-        + fundamental.get("score", 0) * WEIGHTS["fundamental"]
     )
 
     sig, direction = signal_from_score(combined_score, thresholds)
@@ -65,7 +63,6 @@ def combine_signals(
         "score": round(combined_score, 1),
         "technical_weight": WEIGHTS["technical"],
         "sentiment_weight": WEIGHTS["sentiment"],
-        "fundamental_weight": WEIGHTS["fundamental"],
     }
 
 
@@ -100,15 +97,13 @@ def analyze_commodity(commodity_key: str) -> Dict[str, Any]:
             technical["direction"] = direction
 
     sentiment = analyze_sentiment(commodity_key)
-    fundamental = analyze_fundamentals(commodity_key)
 
-    combined = combine_signals(technical, sentiment, fundamental)
+    combined = combine_signals(technical, sentiment)
 
     return {
         "price": round(latest.get("close", 0), 2) if "close" in latest else "N/A",
         "technical": technical,
         "sentiment": sentiment,
-        "fundamental": fundamental,
         "combined": combined,
         "headlines": sentiment.get("headlines", []),
     }
@@ -168,7 +163,6 @@ def llm_analysis(results: Dict[str, Dict[str, Any]], usd_inr: Optional[float]) -
         prompt += f"Price: {currency}{res.get('price', 'N/A')}\n"
         prompt += f"Technical: {res['technical']['signal']} (score: {res['technical']['score']})\n"
         prompt += f"Sentiment: {res['sentiment']['signal']} (score: {res['sentiment']['score']})\n"
-        prompt += f"Fundamental: {res['fundamental']['signal']} (score: {res['fundamental']['score']})\n"
         prompt += f"Combined: {res['combined']['signal']} (score: {res['combined']['score']})\n\n"
 
     if usd_inr:

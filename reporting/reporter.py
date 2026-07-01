@@ -40,7 +40,7 @@ def generate_report(
         lines.append(f"  {cfg.name.upper()} ({currency}{res.get('price', '?')}) [{ticker}]")
         lines.append(f"{'─' * 54}")
 
-        for component in ["technical", "sentiment", "fundamental"]:
+        for component in ["technical", "sentiment"]:
             comp = res.get(component, {})
             sig = comp.get("signal", "N/A")
             score = comp.get("score", 0)
