@@ -18,8 +18,7 @@ A scoring system that blends:
 **Signal smoothing**: Composite score uses a rolling 3-bar median to reduce noise
 from single-bar outliers. Consensus and stability metrics reported alongside.
 
-**Position sizing**: ATR-based stops (2×) and targets (3×), fixed 15% capital
-allocation per trade.
+**Position sizing**: ATR-based stops (2.5×) and targets (4×), trailing stop activates at 3× ATR profit with 2.5× distance, fixed 15% capital allocation per trade. Backtesting includes 0.05% slippage and 0.02% commission.
 
 ## Data Sources
 
